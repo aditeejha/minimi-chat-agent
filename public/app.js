@@ -462,6 +462,12 @@ for (const button of document.querySelectorAll(".suggestions button")) {
   button.addEventListener("click", () => send(button.textContent));
 }
 
+window.addEventListener("hashchange", () => {
+  const id = location.hash.slice(1);
+  if (id && id !== state.threadId) openThread(id);
+  else if (!id && state.threadId) newChat();
+});
+
 els.clockInput.addEventListener("change", syncClock);
 els.clockClear.addEventListener("click", () => {
   els.clockInput.value = "";

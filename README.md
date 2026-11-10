@@ -21,7 +21,7 @@ Keys:
 - `GEMINI_API_KEY`: free at https://aistudio.google.com/apikey, no card needed.
 - `TAVILY_API_KEY`: web search. The free plan at https://app.tavily.com gives 1,000 searches a month.
 
-Both free tiers are enough to run and evaluate the agent. Free Gemini keys are rate-limited, so the agent falls back to the next model in `ANSWER_MODELS` or `PLANNER_MODELS` when one is busy.
+A free Gemini key allows about 20 requests per model per day, and a question uses two or three: one for the planner (on a Flash-Lite model) and one or two for the answer. When a model is busy or out of quota, the agent moves to the next one in `ANSWER_MODELS` or `PLANNER_MODELS`, ending with Flash-Lite. Expect around 25 to 30 questions a day on a free key; for longer sessions, use a key from a project with billing enabled.
 
 ## Try the memory
 

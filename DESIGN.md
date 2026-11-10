@@ -18,12 +18,13 @@ message ─► recall ─► plan ─► search + re-read ─► answer (streame
 
 ## Why it is built this way
 
-- **Fast.** The planner replaces the agent's first round trip: instead of the answer model thinking, calling a tool and waiting, a small model picks the searches and they all run at once, so the answer model usually needs one call. Thinking is set low for lookups and medium only for comparisons and re-checks.
+- **Fast.** The planner replaces the agent's first round trip: instead of the answer model thinking, calling a tool and waiting, a small model picks the searches and they all run at once, so the answer model usually needs one call (at most one follow-up round). Gemini 3.5 Flash took 1.8s to its first word at minimal thinking and 5.1s at low, so lookups use minimal and only comparisons and re-checks use low. Small talk ("thanks!") skips the planner. Measured on a free key: plan 2.0s, search 0.7s, first words 7.9s for a factual lookup.
+- **Clean evidence.** Search results are de-duplicated across http/https, tracking parameters, translations (`/en/`, `/ko/` copies of one page) and same-title pages. A result must mention the query's distinctive words to count, because Tavily's relevance score is unreliable once a date filter is on: a Pokémon card story scored 1.0 for "Salesforce pricing change". Fewer, better sources also mean a smaller prompt and faster first words.
 - **Right.** The model only cites numbered sources, and the server checks every citation against the evidence list. Time-sensitive facts carry their date. When the user refers to a conversation that isn't on record, the context says so explicitly ("No past exchange on record... records start on Thu 5 Nov"), because models are bad at noticing that something is missing.
 - **Time is data.** The clock is passed into each turn rather than read with `new Date()`, so "Monday" is the user's Monday, tests can pin the date, and the UI's simulated time lets you test a week of memory in five minutes.
 - **One tool.** The model can call exactly one tool, `web_search`. Memory is retrieved by the harness, not by a tool call: date maths is deterministic code and is unit-tested.
 - **Plain old answers in history.** Earlier turns are replayed as text, with `[n]` citations rewritten as domains. Old search results are not replayed, so stale evidence never sits in context looking fresh, and the context stays small.
-- **Free to run.** Gemini and Tavily both have free tiers, so anyone can run it. Free keys get rate-limited, so each role has a list of models: one that answers 429 or 5xx sits out for two minutes and the next takes over. A turn stays on one model once it starts, because Gemini's thought signatures are tied to it.
+- **Free to run, and it degrades instead of failing.** Gemini and Tavily both have free tiers. Free Gemini keys allow about 20 requests per model per day and often answer "503 high demand", so each role has a list of models. A model that fails sits out for two minutes, or until the reset time Google gives for a spent daily quota, and the next takes over, ending with Flash-Lite. A watchdog aborts a stream that goes silent (one did for five minutes in testing) and retries on the next model if nothing has reached the user yet. A turn stays on one model once it starts, because Gemini's thought signatures are tied to it.
 
 ## Considered and rejected
 
@@ -40,5 +41,5 @@ message ─► recall ─► plan ─► search + re-read ─► answer (streame
 - **Pick models by measurement.** Run that set against several models per stage (planner, answer) and choose on quality per second, not by default.
 - **Change watching.** Re-check pages cited in recent answers in the background and tell the user, unprompted, when something they asked about has changed.
 - **Structural diffs.** Store full page snapshots and diff pricing tables cell by cell instead of comparing passages.
-- **Faster first words.** Start a search on the raw message while the planner runs, and skip the planner for obvious small talk with a local classifier.
+- **Faster first words.** Start a search on the raw message while the planner runs, and stream the planner's searches as soon as each one is decided instead of waiting for the whole plan.
 - **Accounts.** Per-user memory, export, and a "forget this" control that also removes stored evidence.

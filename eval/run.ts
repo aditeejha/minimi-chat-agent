@@ -40,8 +40,11 @@ function pastDate(month: number, day: number, hour: number): Date {
 type Meta = {
   cited?: number[];
   plan?: { recalled?: { id: string }[]; searches?: unknown[]; rereadUrls?: unknown[] };
-  timings?: { firstTokenMs?: number; totalMs?: number };
+  timings?: { planMs?: number; searchMs?: number; firstTokenMs?: number; totalMs?: number };
+  model?: string;
 };
+
+const seconds = (ms?: number | null) => (ms ? `${(ms / 1000).toFixed(1)}s` : "-");
 const meta = (m: ClientMessage) => m.meta as Meta;
 
 const recalls = (stepIndex: number) => (m: ClientMessage, ids: string[]) =>
@@ -146,8 +149,11 @@ async function run() {
       rows.push([
         `${scenario.name} #${i + 1}`,
         problems.length === 0 ? "pass" : `FAIL: ${problems.join("; ")}`,
-        t?.firstTokenMs ? `${(t.firstTokenMs / 1000).toFixed(1)}s` : "-",
-        t?.totalMs ? `${(t.totalMs / 1000).toFixed(1)}s` : "-",
+        seconds(t?.planMs),
+        seconds(t?.searchMs),
+        seconds(t?.firstTokenMs),
+        seconds(t?.totalMs),
+        (answer && meta(answer).model) || "-",
       ]);
       transcript.push(
         `**${step.at.toString().slice(0, 21)} - user:** ${step.message}\n`,
@@ -162,7 +168,9 @@ async function run() {
 
   mkdirSync("data", { recursive: true });
   const file = `data/eval-${now.toISOString().replace(/[:.]/g, "-")}.md`;
-  transcript.push(`\n## Summary\n\n| step | result | first words | total |\n|---|---|---|---|\n${rows.map((r) => `| ${r.join(" | ")} |`).join("\n")}\n`);
+  transcript.push(
+    `\n## Summary\n\n| step | result | plan | search | first words | total | model |\n|---|---|---|---|---|---|---|\n${rows.map((r) => `| ${r.join(" | ")} |`).join("\n")}\n`,
+  );
   writeFileSync(file, transcript.join("\n"));
   console.log(`\nFull transcript: ${file}`);
   if (rows.some((r) => r[1] !== "pass")) process.exitCode = 1;

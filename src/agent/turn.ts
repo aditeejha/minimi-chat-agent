@@ -3,9 +3,10 @@ import type { Exchange, Message, StoredSource, Store, Thread } from "../db.ts";
 import { recall, type RecallResult } from "../memory/recall.ts";
 import { Evidence, citationsToDomains, citedNumbers, domainOf, renderSource } from "../search/evidence.ts";
 import { SearchError, readPages, type SearchHit } from "../search/tavily.ts";
+import { ModelsUnavailable } from "../llm.ts";
 import { describeDate, describeInstant, describeNow, toLocal } from "../time.ts";
 import { runSearches, streamAnswer, type Usage } from "./answer.ts";
-import { makePlan, type Plan } from "./planner.ts";
+import { isSmallTalk, makePlan, smallTalkPlan, type Plan } from "./planner.ts";
 
 export interface SourcePreview {
   n: number;
@@ -111,6 +112,9 @@ export function renderMemory(plan: Plan, memory: RecallResult, relevant: Exchang
 }
 
 function describeError(error: unknown): string {
+  if (error instanceof ModelsUnavailable && /quota/.test(error.message)) {
+    return `${error.message} Free Gemini keys allow about 20 requests per model per day; each question uses two or three. Wait for the daily reset, or use a key with billing enabled.`;
+  }
   if (error instanceof ApiError) {
     if (error.status === 400 && /api key/i.test(error.message)) return "The Gemini API key was rejected. Check GEMINI_API_KEY in .env.";
     if (error.status === 401 || error.status === 403) return "The Gemini API key was rejected. Check GEMINI_API_KEY in .env.";
@@ -149,18 +153,21 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
   excluded.add(userMessage.id);
   const memory = recall(store, message, local, excluded);
 
-  yield { type: "status", text: "Working out what to look up" };
   const now = describeNow(input.now, timeZone);
-  const plan = await makePlan(
-    {
-      message,
-      now,
-      timeZone,
-      recent: window.slice(-6).map((m) => ({ role: m.role, content: m.content })),
-      recall: memory,
-    },
-    signal,
-  );
+  const smallTalk = isSmallTalk(message);
+  if (!smallTalk) yield { type: "status", text: "Working out what to look up" };
+  const plan = smallTalk
+    ? smallTalkPlan()
+    : await makePlan(
+        {
+          message,
+          now,
+          timeZone,
+          recent: window.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+          recall: memory,
+        },
+        signal,
+      );
   const planMs = elapsed();
 
   const evidence = new Evidence();

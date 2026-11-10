@@ -1,5 +1,13 @@
-import { ApiError, GoogleGenAI, type GenerateContentParameters, type GenerateContentResponse } from "@google/genai";
+import {
+  ApiError,
+  GoogleGenAI,
+  ThinkingLevel,
+  type GenerateContentParameters,
+  type GenerateContentResponse,
+} from "@google/genai";
 import { config } from "./config.ts";
+
+type Params = Omit<GenerateContentParameters, "model">;
 
 let client: GoogleGenAI | null = null;
 
@@ -8,43 +16,83 @@ function gemini(): GoogleGenAI {
   return client;
 }
 
-// Free-tier keys hit per-model rate limits, and Google retires model names.
-// A model that answers 404, 429 or 5xx sits out for a while and the next one
-// in the list takes over, so one busy model doesn't take the agent down.
+// Free-tier keys hit per-model rate limits (the daily cap is 20 requests per
+// model) and "high demand" 503s, and Google retires model names. A model that
+// answers 404, 429 or 5xx sits out and the next one in the list takes over.
+// When Google says how long to wait (a spent daily quota), we wait that long.
 const COOLDOWN_MS = 2 * 60 * 1000;
-const coolingUntil = new Map<string, number>();
+const MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const cooling = new Map<string, { until: number; reason: string }>();
+
+export class ModelsUnavailable extends Error {}
 
 function isTransient(error: unknown): boolean {
   return error instanceof ApiError && [404, 429, 500, 502, 503, 504].includes(error.status);
 }
 
-function candidates(models: string[]): string[] {
+function rejectsThinkingLevel(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 400 && /thinking level/i.test(error.message);
+}
+
+export function retryDelayMs(error: unknown): number | null {
+  if (!(error instanceof ApiError) || error.status !== 429) return null;
+  const match = error.message.match(/retryDelay\\?"\s*:\s*\\?"(\d+(?:\.\d+)?)s/);
+  return match ? Math.min(Number(match[1]) * 1000, MAX_COOLDOWN_MS) : null;
+}
+
+export function coolDown(model: string, ms = COOLDOWN_MS, reason = "busy"): void {
+  cooling.set(model, { until: Date.now() + ms, reason });
+}
+
+export function availableModels(models: string[]): string[] {
   const now = Date.now();
-  const ready = models.filter((m) => (coolingUntil.get(m) ?? 0) <= now);
+  const ready = models.filter((m) => (cooling.get(m)?.until ?? 0) <= now);
   return ready.length > 0 ? ready : models;
 }
 
-async function withFallback<T>(models: string[], call: (model: string) => Promise<T>): Promise<{ model: string; result: T }> {
-  const failures: string[] = [];
-  for (const model of candidates(models)) {
-    try {
-      return { model, result: await call(model) };
-    } catch (error) {
-      if (!isTransient(error)) throw error;
-      coolingUntil.set(model, Date.now() + COOLDOWN_MS);
-      failures.push(`${model}: ${(error as ApiError).status}`);
-    }
-  }
-  throw new Error(`Every model is unavailable right now (${failures.join(", ")}). Try again in a minute.`);
+function describeCooling(models: string[]): string {
+  const now = Date.now();
+  return models
+    .map((m) => {
+      const entry = cooling.get(m);
+      if (!entry || entry.until <= now) return `${m}: failed`;
+      return `${m}: ${entry.reason}, back in ${Math.ceil((entry.until - now) / 60_000)} min`;
+    })
+    .join("; ");
 }
 
-export function generate(models: string[], params: Omit<GenerateContentParameters, "model">) {
-  return withFallback(models, (model) => gemini().models.generateContent({ ...params, model }));
+async function withFallback<T>(
+  models: string[],
+  params: Params,
+  call: (request: GenerateContentParameters) => Promise<T>,
+): Promise<{ model: string; result: T }> {
+  for (const model of availableModels(models)) {
+    try {
+      try {
+        return { model, result: await call({ ...params, model }) };
+      } catch (error) {
+        // Not every model accepts every thinking level (MINIMAL is Flash-only).
+        if (!rejectsThinkingLevel(error)) throw error;
+        const lowered = { ...params.config, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
+        return { model, result: await call({ ...params, config: lowered, model }) };
+      }
+    } catch (error) {
+      if (!isTransient(error)) throw error;
+      const wait = retryDelayMs(error);
+      const outOfQuota = wait !== null && wait > COOLDOWN_MS;
+      coolDown(model, Math.max(wait ?? 0, COOLDOWN_MS), outOfQuota ? "daily quota used up" : `${(error as ApiError).status}`);
+    }
+  }
+  throw new ModelsUnavailable(`No Gemini model can answer right now (${describeCooling(models)}).`);
+}
+
+export function generate(models: string[], params: Params) {
+  return withFallback(models, params, (request) => gemini().models.generateContent(request));
 }
 
 export function generateStream(
   models: string[],
-  params: Omit<GenerateContentParameters, "model">,
+  params: Params,
 ): Promise<{ model: string; result: AsyncGenerator<GenerateContentResponse> }> {
-  return withFallback(models, (model) => gemini().models.generateContentStream({ ...params, model }));
+  return withFallback(models, params, (request) => gemini().models.generateContentStream(request));
 }

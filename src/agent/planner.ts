@@ -27,7 +27,30 @@ const PlanSchema = z.object({
 
 const { $schema, ...PLAN_JSON_SCHEMA } = z.toJSONSchema(PlanSchema);
 
-export type Plan = z.infer<typeof PlanSchema> & { source: "planner" | "fallback"; model?: string; error?: string };
+export type Plan = z.infer<typeof PlanSchema> & { source: "planner" | "fallback" | "local"; model?: string; error?: string };
+
+const GREETING = /^(hi|hey|hello|yo|thanks|thank you|thx|ty|ok|okay|cool|great|nice|perfect|awesome|bye|goodbye|cheers|good (morning|afternoon|evening|night))\b/i;
+const ASKS_SOMETHING = /\?|\d|\b(what|who|when|where|why|how|which|is|are|does|do|can|could|should|price|cost|compare|latest|news|still|changed|asked)\b/i;
+
+// "thanks!" doesn't need a planner call (or a request from a daily quota).
+export function isSmallTalk(message: string): boolean {
+  const text = message.trim();
+  return GREETING.test(text) && text.split(/\s+/).length <= 8 && !ASKS_SOMETHING.test(text.replace(GREETING, ""));
+}
+
+export function smallTalkPlan(): Plan {
+  return {
+    referencesPastConversation: false,
+    relevantMemoryIds: [],
+    needsSearch: false,
+    searches: [],
+    rereadUrls: [],
+    rereadFocus: null,
+    effort: "low",
+    status: "Replying",
+    source: "local",
+  };
+}
 
 export interface PlanInput {
   message: string;
@@ -109,7 +132,7 @@ export async function makePlan(input: PlanInput, signal?: AbortSignal): Promise<
         systemInstruction: PLANNER_SYSTEM,
         responseMimeType: "application/json",
         responseJsonSchema: PLAN_JSON_SCHEMA,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
         maxOutputTokens: 4000,
         abortSignal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       },

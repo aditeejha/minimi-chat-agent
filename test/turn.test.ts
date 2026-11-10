@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Message } from "../src/db.ts";
-import { fallbackPlan, planPrompt, type Plan } from "../src/agent/planner.ts";
+import { fallbackPlan, isSmallTalk, planPrompt, type Plan } from "../src/agent/planner.ts";
 import { historyContents, renderMemory } from "../src/agent/turn.ts";
 import type { RecallResult } from "../src/memory/recall.ts";
 
@@ -69,4 +69,13 @@ test("if the planner fails the turn still searches", () => {
   assert.equal(fallback.needsSearch, true);
   assert.equal(fallback.searches[0]?.query, "Neon pricing");
   assert.equal(fallback.source, "fallback");
+});
+
+test("small talk skips the planner, questions don't", () => {
+  for (const text of ["hey, thanks for the help earlier!", "thanks!", "ok cool", "Good morning"]) {
+    assert.equal(isSmallTalk(text), true, text);
+  }
+  for (const text of ["thanks, is Zoho still cheaper?", "ok what's the price of Neon", "hi, what did I ask you yesterday", "hello can you compare CRMs"]) {
+    assert.equal(isSmallTalk(text), false, text);
+  }
 });

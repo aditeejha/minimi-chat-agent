@@ -56,6 +56,37 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+// Tavily sends dates like "Thu, 11 Jun 2026 06:31:21 GMT".
+export function isoDate(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+const GENERIC = new Set(
+  `pricing price prices cost costs change changes changed new news latest update updates updated announcement
+  announces announced launch launches launched feature features release releases plan plans tier tiers per seat
+  seats user users month monthly year yearly annual best top compare comparison review reviews guide official
+  what when which how does the and for with from vs versus 2024 2025 2026 2027 since today current`.split(/\s+/),
+);
+
+function distinctiveTerms(query: string): string[] {
+  const words = query.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}.+#-]*/gu) ?? [];
+  return [...new Set(words.map((w) => w.replace(/[.+#-]+$/, "")).filter((w) => w.length > 2 && !GENERIC.has(w)))];
+}
+
+// Tavily's relevance score is not reliable once a date filter is on (a
+// Pokémon story scored 1.0 for "Salesforce pricing change"), so a result has
+// to mention at least half of the query's distinctive words to count.
+export function looksRelevant(query: string, hit: SearchHit): boolean {
+  const terms = distinctiveTerms(query);
+  if (terms.length === 0) return true;
+  const haystack = `${hit.title} ${hit.url} ${hit.content}`.toLowerCase();
+  const found = terms.filter((t) => haystack.includes(t)).length;
+  return found >= Math.ceil(terms.length / 2);
+}
+
 // "fast" depth returns the chunks of each page that best match the query, so
 // a pricing page arrives as its price table rather than its hero banner.
 export async function search(q: SearchQuery, signal?: AbortSignal): Promise<SearchHit[]> {
@@ -83,9 +114,11 @@ export async function search(q: SearchQuery, signal?: AbortSignal): Promise<Sear
       .map((r) => ({
         url: text(r.url),
         title: text(r.title) || text(r.url),
-        published: text(r.published_date) || null,
+        published: isoDate(r.published_date),
         content: text(r.content),
-      })),
+      }))
+      .filter((hit) => looksRelevant(q.query, hit))
+      .slice(0, 4),
   );
 }
 

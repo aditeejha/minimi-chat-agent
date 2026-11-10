@@ -6,12 +6,24 @@ const MAX_PASSAGE_CHARS = 1800;
 export function normalizeUrl(raw: string): string {
   try {
     const url = new URL(raw);
+    url.protocol = "https:";
     url.hash = "";
     for (const key of [...url.searchParams.keys()]) {
       if (/^(utm_|ref$|ref_|fbclid|gclid|mc_)/i.test(key)) url.searchParams.delete(key);
     }
     url.hostname = url.hostname.replace(/^www\./, "");
     return url.toString().replace(/\/$/, "");
+  } catch {
+    return raw;
+  }
+}
+
+// support.pipedrive.com/ru/article/x and /en/article/x are one article.
+function pageKey(raw: string): string {
+  try {
+    const url = new URL(normalizeUrl(raw));
+    const path = url.pathname.replace(/^\/[a-z]{2}(?:[-_][a-z]{2,4})?(?=\/)/i, "");
+    return `${url.hostname}${path}${url.search}`;
   } catch {
     return raw;
   }
@@ -39,10 +51,18 @@ function clean(content: string): string {
 export class Evidence {
   sources: StoredSource[] = [];
 
+  // A page counts as already seen if its URL matches, or if the same site has
+  // a page with the same title (translations and ?query variants of one post).
   add(hit: SearchHit, retrievedAt: string): number {
-    const key = normalizeUrl(hit.url);
+    const key = pageKey(hit.url);
+    const domain = domainOf(hit.url);
+    const title = hit.title.trim().toLowerCase();
     const passages = clean(hit.content);
-    const existing = this.sources.find((s) => normalizeUrl(s.url) === key);
+    const existing = this.sources.find(
+      (s) =>
+        pageKey(s.url) === key ||
+        (title.length > 12 && hit.title !== hit.url && domainOf(s.url) === domain && s.title.trim().toLowerCase() === title),
+    );
     if (existing) {
       if (passages && !existing.passages.includes(passages.slice(0, 80))) {
         existing.passages = `${existing.passages}\n…\n${passages}`.slice(0, MAX_PASSAGE_CHARS * 2);

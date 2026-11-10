@@ -16,8 +16,17 @@ test("the same page found twice keeps one number and merges passages", () => {
   assert.equal(evidence.sources[0]?.published, "2026-11-01");
 });
 
-test("normalizeUrl ignores tracking params, www and trailing slashes", () => {
-  assert.equal(normalizeUrl("https://www.example.com/a/?utm_medium=x&id=3#top"), "https://example.com/a/?id=3");
+test("normalizeUrl ignores protocol, tracking params, www and trailing slashes", () => {
+  assert.equal(normalizeUrl("http://www.example.com/a/?utm_medium=x&id=3#top"), "https://example.com/a/?id=3");
+});
+
+test("translations of one post on the same site count once", () => {
+  const evidence = new Evidence();
+  const title = "Node.js — Evolving the Node.js Release Schedule";
+  const a = evidence.add({ url: "https://nodejs.org/en/blog/announcements/evolving", title, published: null, content: "en" }, at);
+  const b = evidence.add({ url: "https://nodejs.org/ko/blog/announcements/evolving", title, published: null, content: "ko" }, at);
+  const c = evidence.add({ url: "https://example.com/evolving", title, published: null, content: "mirror" }, at);
+  assert.deepEqual([a, b, c], [1, 1, 2]);
 });
 
 test("only citations that point at real sources count", () => {

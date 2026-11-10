@@ -1,45 +1,45 @@
 # Design
 
-The three example questions in the brief are all about time: what was said on a date, and whether it is still true. So the agent is built around one idea: **every answer is stored as a dated snapshot of the evidence it was based on.** A later "has anything changed?" compares that evidence with today's, rather than asking the model to remember.
+The brief's example questions are all about time: what was said on a date, and whether it is still true. So the agent is built around one idea: **every answer is stored as a dated snapshot of the evidence behind it.** "Has anything changed?" then compares that evidence with today's, instead of asking a model to remember.
 
 ## How a turn works
 
 ```
 message ─► recall ─► plan ─► search + re-read ─► answer (streamed) ─► store
-           SQLite    small     Tavily, in          Gemini Flash,
-           no LLM    model     parallel            web_search tool
+           SQLite    Flash-Lite  Tavily, all       Gemini Flash,
+           no LLM    JSON plan   in parallel       web_search tool
 ```
 
-1. **Recall, with no model call.** Date phrases ("on Monday", "last Tuesday", "3 November", "last week") are parsed with chrono and turned into calendar-date windows in the user's time zone, which the browser sends with each message. Every past exchange in those windows is a candidate, plus the top keyword matches from SQLite full-text search. This takes milliseconds.
-2. **Plan, with a small model.** Gemini Flash-Lite, constrained to a JSON schema, sees the message, the recent conversation and the candidates. It decides which past exchanges matter, whether to search, up to six searches to run in parallel (with a `since` date filter or a single domain where useful), which previously cited pages to re-read, and how hard the answer model should think.
-3. **Search.** Tavily's `fast` depth returns the passages of each page that best match the query, so a pricing page arrives as its price table. Results are de-duplicated by URL and numbered. Pages cited in the recalled answer are fetched again so old and new versions can be compared.
-4. **Answer.** Gemini Flash streams the answer from a single user turn that holds the current local time, the recalled exchanges (question, answer and the passages they cited, with their dates) and today's numbered sources. It keeps the `web_search` tool for follow-up searches, up to two rounds.
-5. **Store.** The answer, every source with the exact passages the model saw, the plan and the timings are saved. That record is what the next "is this still correct?" works from.
+1. **Recall, no model call.** Date phrases ("on Monday", "last Tuesday", "3 November", "last week") become calendar-date windows in the user's time zone (chrono plus unit-tested rules). Exchanges in those windows, plus top keyword matches from SQLite full-text search, are the candidates. Milliseconds.
+2. **Plan.** Flash-Lite, held to a JSON schema, picks the relevant past exchanges, up to six parallel searches (with a `since` date or one domain), which previously cited pages to re-read, and how hard the answer model should think.
+3. **Search.** Tavily `fast` returns the passages that best match each query, so a pricing page arrives as its price table. Results are filtered, de-duplicated and numbered.
+4. **Answer.** Gemini Flash streams from one user turn holding the local time, the recalled exchanges (question, answer, cited passages, dates) and today's sources. It keeps `web_search` for one follow-up round.
+5. **Store.** Answer, sources with the exact passages the model saw, plan and timings. The next "is this still correct?" works from this record.
 
-## Why it is built this way
+## Why this way
 
-- **Fast.** The planner replaces the agent's first round trip: instead of the answer model thinking, calling a tool and waiting, a small model picks the searches and they all run at once, so the answer model usually needs one call (at most one follow-up round). Gemini 3.5 Flash took 1.8s to its first word at minimal thinking and 5.1s at low, so lookups use minimal and only comparisons and re-checks use low. Small talk ("thanks!") skips the planner. Measured on a free key: plan 2.0s, search 0.7s, first words 7.9s for a factual lookup.
-- **Clean evidence.** Search results are de-duplicated across http/https, tracking parameters, translations (`/en/`, `/ko/` copies of one page) and same-title pages. A result must mention the query's distinctive words to count, because Tavily's relevance score is unreliable once a date filter is on: a Pokémon card story scored 1.0 for "Salesforce pricing change". Fewer, better sources also mean a smaller prompt and faster first words.
-- **Right.** The model only cites numbered sources, and the server checks every citation against the evidence list. Time-sensitive facts carry their date. When the user refers to a conversation that isn't on record, the context says so explicitly ("No past exchange on record... records start on Thu 5 Nov"), because models are bad at noticing that something is missing.
-- **Time is data.** The clock is passed into each turn rather than read with `new Date()`, so "Monday" is the user's Monday, tests can pin the date, and the UI's simulated time lets you test a week of memory in five minutes.
-- **One tool.** The model can call exactly one tool, `web_search`. Memory is retrieved by the harness, not by a tool call: date maths is deterministic code and is unit-tested.
-- **Plain old answers in history.** Earlier turns are replayed as text, with `[n]` citations rewritten as domains. Old search results are not replayed, so stale evidence never sits in context looking fresh, and the context stays small.
-- **Free to run, and it degrades instead of failing.** Gemini and Tavily both have free tiers. Free Gemini keys allow about 20 requests per model per day and often answer "503 high demand", so each role has a list of models. A model that fails sits out for two minutes, or until the reset time Google gives for a spent daily quota, and the next takes over, ending with Flash-Lite. A watchdog aborts a stream that goes silent (one did for five minutes in testing) and retries on the next model if nothing has reached the user yet. A turn stays on one model once it starts, because Gemini's thought signatures are tied to it.
+- **Fast.** The planner replaces the agent's first round trip: a small model picks the searches and they run at once, so the answer model usually needs one call. Flash took 1.8s to its first word at minimal thinking and 5.1s at low, so lookups use minimal and only re-checks and comparisons use low. Small talk skips the planner. Measured on a free key: plan 2.0s, search 0.7s, first words 7.9s.
+- **Right.** Only numbered sources may be cited, and the server checks every citation. Prices and versions carry dates. "Unchanged" needs a citation from today, and a "change" must compare the same plan on both sides. When the user mentions a conversation that isn't on record, the context says so explicitly, because models are bad at noticing absence.
+- **Clean evidence.** Duplicates across http/https, tracking parameters, translations and same-title pages are merged. A result must mention the query's distinctive words, because Tavily's score is unreliable with a date filter: a Pokémon story scored 1.0 for "Salesforce pricing change".
+- **Time is data.** The clock is passed into each turn, not read with `new Date()`. "Monday" is the user's Monday, tests pin the date, and the UI's simulated time tests a week of memory in minutes.
+- **One tool.** The model can call only `web_search`. Memory is fetched by the harness, so date maths is code, not model output.
+- **Small, honest context.** Earlier turns are replayed as text with citations rewritten as domains. Old search results are not replayed, so stale evidence never looks fresh.
+- **Degrades instead of failing.** Free Gemini keys allow about 20 requests per model per day and often return "503 high demand". Each role has a list of models; a failing one sits out (until Google's reset time for a spent quota) and the next takes over, ending with Flash-Lite. A watchdog aborts a silent stream (one hung for five minutes in testing) and retries elsewhere if nothing has reached the user.
 
 ## Considered and rejected
 
-- **A plain tool-calling loop** where one model decides everything. Simpler, but slower: one more model round trip before every search.
-- **Memory as a second tool** (`recall(date)`). It costs a round trip, puts date arithmetic in the model's hands, and the brief asks for one tool.
-- **Embeddings and a vector store for recall.** The questions are anchored by dates and named products. Date windows plus full-text search cover them with no extra service. Worth adding once a user's history outgrows keywords.
-- **Gemini's built-in Google Search grounding.** Quick to wire up, but it hides the search layer: no date filters, no re-reading of cited pages, no control over which passages the model sees.
-- **A structured "claims ledger"** extracted after each answer. It needs an extra model call per turn. Storing the cited passages gives the same before-and-after comparison.
-- **LangChain or a provider-agnostic SDK.** At this size it adds indirection without saving code, and it hides the steps reviewers want to see. The model calls live in two small files.
+- **A plain tool-calling loop.** Simpler, but one more model round trip before every search.
+- **Memory as a second tool.** Costs a round trip, hands date arithmetic to the model, and the brief asks for one tool.
+- **Embeddings for recall.** The questions are anchored by dates and product names; date windows plus full-text search cover them with no extra service.
+- **Gemini's built-in Google Search.** It hides the search layer: no date filters, no re-reading cited pages, no say in which passages the model sees.
+- **A "claims ledger" extracted after each answer.** An extra model call per turn; stored passages give the same before-and-after comparison.
+- **LangChain or a multi-provider SDK.** Indirection without saving code at this size. The model calls live in two small files.
 
 ## With another week
 
-- **A real eval set.** About 50 multi-day conversations, graded by a model against time-stamped ground truth, plus p50 and p95 latency per stage. `npm run eval` is the skeleton.
-- **Pick models by measurement.** Run that set against several models per stage (planner, answer) and choose on quality per second, not by default.
-- **Change watching.** Re-check pages cited in recent answers in the background and tell the user, unprompted, when something they asked about has changed.
-- **Structural diffs.** Store full page snapshots and diff pricing tables cell by cell instead of comparing passages.
-- **Faster first words.** Start a search on the raw message while the planner runs, and stream the planner's searches as soon as each one is decided instead of waiting for the whole plan.
-- **Accounts.** Per-user memory, export, and a "forget this" control that also removes stored evidence.
+- **A real eval set:** about 50 multi-day conversations graded against time-stamped ground truth, with p50/p95 latency per stage. `npm run eval` is the skeleton.
+- **Models chosen by measurement**, per stage, on quality per second.
+- **Change watching:** re-check cited pages in the background and tell the user, unprompted, when something they asked about changed.
+- **Structural diffs** of stored page snapshots, so pricing tables compare cell by cell.
+- **Faster first words:** start searching on the raw message while the planner runs.
+- **Accounts:** per-user memory, export, and "forget this" that also deletes stored evidence.

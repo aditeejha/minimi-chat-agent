@@ -9,7 +9,7 @@ if (major < 22 || (major === 22 && minor < 18)) {
 }
 
 const fromFile = existsSync(".env") ? readFileSync(".env", "utf8") : "";
-const missing = ["ANTHROPIC_API_KEY", "TAVILY_API_KEY"].filter(
+const missing = ["GEMINI_API_KEY", "TAVILY_API_KEY"].filter(
   (name) => !process.env[name] && !new RegExp(`^${name}=\\S+`, "m").test(fromFile),
 );
 if (missing.length > 0) {

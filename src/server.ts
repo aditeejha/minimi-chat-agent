@@ -19,7 +19,7 @@ const ChatRequest = z.object({
 });
 
 app.get("/api/health", (c) =>
-  c.json({ missing: missingKeys(), answerModel: config.answerModel, plannerModel: config.plannerModel }),
+  c.json({ missing: missingKeys(), answerModels: config.answerModels, plannerModels: config.plannerModels }),
 );
 
 app.get("/api/threads", (c) => c.json(store.listThreads()));
@@ -75,5 +75,5 @@ serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`\nChat agent running at http://localhost:${info.port}`);
   const missing = missingKeys();
   if (missing.length > 0) console.log(`Missing ${missing.join(" and ")}: copy .env.example to .env and fill them in.`);
-  console.log(`Answer model ${config.answerModel}, planner ${config.plannerModel}, history in ${config.dbPath}\n`);
+  console.log(`Answer models: ${config.answerModels.join(", ")}. Planner: ${config.plannerModels.join(", ")}. History: ${config.dbPath}\n`);
 });

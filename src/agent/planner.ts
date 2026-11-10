@@ -1,7 +1,7 @@
+import { ThinkingLevel } from "@google/genai";
 import { z } from "zod";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { config } from "../config.ts";
-import { anthropic } from "../llm.ts";
+import { generate } from "../llm.ts";
 import type { Exchange } from "../db.ts";
 import type { RecallResult } from "../memory/recall.ts";
 import { describeDate, describeInstant } from "../time.ts";
@@ -25,7 +25,9 @@ const PlanSchema = z.object({
   status: z.string(),
 });
 
-export type Plan = z.infer<typeof PlanSchema> & { source: "planner" | "fallback"; error?: string };
+const { $schema, ...PLAN_JSON_SCHEMA } = z.toJSONSchema(PlanSchema);
+
+export type Plan = z.infer<typeof PlanSchema> & { source: "planner" | "fallback"; model?: string; error?: string };
 
 export interface PlanInput {
   message: string;
@@ -99,21 +101,22 @@ export function fallbackPlan(input: PlanInput, error: string): Plan {
 }
 
 export async function makePlan(input: PlanInput, signal?: AbortSignal): Promise<Plan> {
-  const model = config.plannerModel;
+  const timeout = AbortSignal.timeout(12_000);
   try {
-    const response = await anthropic().messages.parse(
-      {
-        model,
-        max_tokens: 2000,
-        ...(model.includes("haiku") ? { thinking: { type: "disabled" as const } } : {}),
-        output_config: { effort: "low", format: zodOutputFormat(PlanSchema) },
-        system: PLANNER_SYSTEM,
-        messages: [{ role: "user", content: planPrompt(input) }],
+    const { model, result } = await generate(config.plannerModels, {
+      contents: [{ role: "user", parts: [{ text: planPrompt(input) }] }],
+      config: {
+        systemInstruction: PLANNER_SYSTEM,
+        responseMimeType: "application/json",
+        responseJsonSchema: PLAN_JSON_SCHEMA,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        maxOutputTokens: 4000,
+        abortSignal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       },
-      { signal, timeout: 10_000, maxRetries: 1 },
-    );
-    const plan = response.parsed_output;
-    if (!plan) return fallbackPlan(input, `planner returned no plan (stop_reason ${response.stop_reason})`);
+    });
+    const parsed = PlanSchema.safeParse(JSON.parse(result.text ?? "null"));
+    if (!parsed.success) return fallbackPlan(input, `planner returned an invalid plan: ${parsed.error.message.slice(0, 200)}`);
+    const plan = parsed.data;
     const known = new Set([...input.recall.byDate, ...input.recall.byTopic].map((e) => e.id));
     const knownUrls = new Set(
       [...input.recall.byDate, ...input.recall.byTopic].flatMap((e) => e.sources.map((s) => s.url)),
@@ -124,6 +127,7 @@ export async function makePlan(input: PlanInput, signal?: AbortSignal): Promise<
       searches: plan.needsSearch ? plan.searches.filter((s) => s.query.trim()).slice(0, 6) : [],
       rereadUrls: plan.rereadUrls.filter((url) => knownUrls.has(url)).slice(0, 5),
       source: "planner",
+      model,
     };
   } catch (error) {
     if (signal?.aborted) throw error;

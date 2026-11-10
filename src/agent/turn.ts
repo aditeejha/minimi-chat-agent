@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { ApiError, type Content } from "@google/genai";
 import type { Exchange, Message, StoredSource, Store, Thread } from "../db.ts";
 import { recall, type RecallResult } from "../memory/recall.ts";
 import { Evidence, citationsToDomains, citedNumbers, domainOf, renderSource } from "../search/evidence.ts";
@@ -6,8 +6,6 @@ import { SearchError, readPages, type SearchHit } from "../search/tavily.ts";
 import { describeDate, describeInstant, describeNow, toLocal } from "../time.ts";
 import { runSearches, streamAnswer, type Usage } from "./answer.ts";
 import { makePlan, type Plan } from "./planner.ts";
-
-type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 
 export interface SourcePreview {
   n: number;
@@ -31,6 +29,7 @@ export type TurnEvent =
   | { type: "status"; text: string; detail?: string[] }
   | { type: "sources"; sources: SourcePreview[] }
   | { type: "delta"; text: string }
+  | { type: "reset" }
   | { type: "done"; message: ClientMessage }
   | { type: "error"; message: string };
 
@@ -69,12 +68,16 @@ function assistantForHistory(m: Message): string {
   return urls.length > 0 ? `${body}\n\nSources: ${urls.join(" ")}` : body;
 }
 
-export function historyParams(window: Message[]): MessageParam[] {
-  const params: MessageParam[] = window
+export function historyContents(window: Message[]): Content[] {
+  const contents: Content[] = window
     .filter((m) => m.content.trim())
-    .map((m) => (m.role === "user" ? { role: "user", content: m.content } : { role: "assistant", content: assistantForHistory(m) }));
-  while (params[0]?.role === "assistant") params.shift();
-  return params;
+    .map((m) =>
+      m.role === "user"
+        ? { role: "user", parts: [{ text: m.content }] }
+        : { role: "model", parts: [{ text: assistantForHistory(m) }] },
+    );
+  while (contents[0]?.role === "model") contents.shift();
+  return contents;
 }
 
 function renderExchange(e: Exchange, timeZone: string): string {
@@ -108,11 +111,14 @@ export function renderMemory(plan: Plan, memory: RecallResult, relevant: Exchang
 }
 
 function describeError(error: unknown): string {
-  if (error instanceof Anthropic.AuthenticationError) return "The Anthropic API key was rejected. Check ANTHROPIC_API_KEY in .env.";
-  if (error instanceof Anthropic.RateLimitError) return "The model API is rate-limiting requests. Try again in a moment.";
-  if (error instanceof Anthropic.APIConnectionError) return "Couldn't reach the model API. Check your connection.";
-  if (error instanceof Anthropic.APIError) return `The model API returned an error (${error.status ?? "unknown"}): ${error.message}`;
+  if (error instanceof ApiError) {
+    if (error.status === 400 && /api key/i.test(error.message)) return "The Gemini API key was rejected. Check GEMINI_API_KEY in .env.";
+    if (error.status === 401 || error.status === 403) return "The Gemini API key was rejected. Check GEMINI_API_KEY in .env.";
+    if (error.status === 429) return "The Gemini API is rate-limiting this key. Try again in a minute.";
+    return `The Gemini API returned an error (${error.status}): ${error.message.slice(0, 300)}`;
+  }
   if (error instanceof SearchError) return error.message;
+  if (error instanceof TypeError && /fetch failed/i.test(error.message)) return "Couldn't reach the model API. Check your connection.";
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -214,16 +220,14 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
   let text = "";
   let firstTokenMs: number | null = null;
   let usage: Usage | null = null;
-  let stopReason: string | null = null;
+  let finishReason: string | null = null;
+  let model: string | null = null;
   let searchRounds = 0;
   let failure: string | null = null;
   try {
     for await (const event of streamAnswer({
-      history: historyParams(window),
-      turn: [
-        { type: "text", text: context },
-        { type: "text", text: message },
-      ],
+      history: historyContents(window),
+      turn: [{ text: context }, { text: message }],
       evidence,
       effort: plan.effort,
       retrievedAt: nowIso,
@@ -233,14 +237,20 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
         firstTokenMs ??= elapsed();
         text += event.text;
         yield { type: "delta", text: event.text };
+      } else if (event.type === "reset") {
+        text = "";
+        firstTokenMs = null;
+        yield { type: "reset" };
       } else if (event.type === "searching") {
         yield { type: "status", text: "Searching again", detail: event.queries };
       } else if (event.type === "sources") {
         yield { type: "sources", sources: preview(evidence.sources) };
       } else {
+        text = event.text;
         usage = event.usage;
-        stopReason = event.stopReason;
+        finishReason = event.finishReason;
         searchRounds = event.searchRounds;
+        model = event.model;
       }
     }
   } catch (error) {
@@ -265,9 +275,11 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
     meta: {
       cited,
       interrupted: failure ?? undefined,
-      stopReason,
+      finishReason,
+      model,
       plan: {
         source: plan.source,
+        model: plan.model,
         error: plan.error,
         referencesPastConversation: plan.referencesPastConversation,
         recalled: relevant.map((e) => ({ id: e.id, askedAt: e.askedAt })),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Message } from "../src/db.ts";
 import { fallbackPlan, planPrompt, type Plan } from "../src/agent/planner.ts";
-import { historyParams, renderMemory } from "../src/agent/turn.ts";
+import { historyContents, renderMemory } from "../src/agent/turn.ts";
 import type { RecallResult } from "../src/memory/recall.ts";
 
 const emptyRecall: RecallResult = {
@@ -50,10 +50,11 @@ test("history starts with a user turn and carries sources as domains and URLs", 
       meta: { cited: [1] },
     },
   ];
-  const params = historyParams(window);
-  assert.equal(params[0]?.role, "user");
-  assert.equal(params.length, 2);
-  assert.equal(params[1]?.content, "Neon Launch is $19/month (neon.com).\n\nSources: https://neon.com/pricing");
+  const contents = historyContents(window);
+  assert.equal(contents[0]?.role, "user");
+  assert.equal(contents.length, 2);
+  assert.equal(contents[1]?.role, "model");
+  assert.equal(contents[1]?.parts?.[0]?.text, "Neon Launch is $19/month (neon.com).\n\nSources: https://neon.com/pricing");
 });
 
 test("the planner sees resolved dates and memory coverage", () => {

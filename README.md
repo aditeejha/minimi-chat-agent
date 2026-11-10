@@ -9,7 +9,7 @@ How it works and why: [DESIGN.md](DESIGN.md).
 Needs Node 22.18 or newer (it uses Node's built-in TypeScript and SQLite support).
 
 ```bash
-cp .env.example .env    # add ANTHROPIC_API_KEY and TAVILY_API_KEY
+cp .env.example .env    # add GEMINI_API_KEY and TAVILY_API_KEY
 npm install
 npm run dev
 ```
@@ -18,8 +18,10 @@ Open http://localhost:3000.
 
 Keys:
 
-- `ANTHROPIC_API_KEY`: from https://platform.claude.com
+- `GEMINI_API_KEY`: free at https://aistudio.google.com/apikey, no card needed.
 - `TAVILY_API_KEY`: web search. The free plan at https://app.tavily.com gives 1,000 searches a month.
+
+Both free tiers are enough to run and evaluate the agent. Free Gemini keys are rate-limited, so the agent falls back to the next model in `ANSWER_MODELS` or `PLANNER_MODELS` when one is busy.
 
 ## Try the memory
 
@@ -37,7 +39,7 @@ Messages sent while simulated time is on are stamped with that time. The web res
 | `npm run dev` | Starts the app with auto-reload on http://localhost:3000 |
 | `npm test` | Unit tests for date resolution, recall, evidence handling and prompt assembly (no API keys needed) |
 | `npm run typecheck` | TypeScript check |
-| `npm run eval` | Replays multi-day scenarios against the live agent with a simulated clock and writes a transcript to `data/` (uses API credits) |
+| `npm run eval` | Replays multi-day scenarios against the live agent with a simulated clock and writes a transcript to `data/` (uses your API quota) |
 
 ## Layout
 
@@ -45,8 +47,9 @@ Messages sent while simulated time is on are stamped with that time. The web res
 src/
   server.ts            HTTP API and server-sent events (Hono)
   agent/turn.ts        One turn: recall, plan, search, answer, store
-  agent/planner.ts     Fast model that decides what to recall and what to search
+  agent/planner.ts     Small model that decides what to recall and what to search
   agent/answer.ts      Streaming answer loop with the web_search tool
+  llm.ts               Gemini client with per-model fallback
   agent/prompts.ts     System prompts
   memory/dates.ts      "last Tuesday" to calendar dates in the user's time zone
   memory/recall.ts     Finds past exchanges by date and by keyword

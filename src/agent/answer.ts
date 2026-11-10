@@ -1,42 +1,50 @@
-import Anthropic from "@anthropic-ai/sdk";
+import {
+  FinishReason,
+  FunctionCallingConfigMode,
+  ThinkingLevel,
+  type Content,
+  type FunctionDeclaration,
+  type GenerateContentResponseUsageMetadata,
+  type Part,
+} from "@google/genai";
 import { z } from "zod";
 import { config } from "../config.ts";
-import { anthropic } from "../llm.ts";
+import { generateStream } from "../llm.ts";
 import { Evidence } from "../search/evidence.ts";
 import { search, type SearchQuery } from "../search/tavily.ts";
 import { ANSWER_SYSTEM } from "./prompts.ts";
 
-type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
-type ContentBlockParam = Anthropic.Beta.Messages.BetaContentBlockParam;
-type ToolResult = Anthropic.Beta.Messages.BetaToolResultBlockParam;
-type Tool = Anthropic.Beta.Messages.BetaTool;
-
 export type AnswerEvent =
   | { type: "delta"; text: string }
+  | { type: "reset" }
   | { type: "searching"; queries: string[] }
   | { type: "sources"; numbers: number[] }
-  | { type: "final"; text: string; stopReason: string | null; usage: Usage; searchRounds: number };
+  | { type: "final"; text: string; finishReason: string | null; usage: Usage; searchRounds: number; model: string };
 
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
+  thinkingTokens: number;
+  cachedTokens: number;
 }
 
 const MAX_SEARCH_ROUNDS = 2;
+const BLOCKED = new Set<string>([
+  FinishReason.SAFETY,
+  FinishReason.PROHIBITED_CONTENT,
+  FinishReason.BLOCKLIST,
+  FinishReason.SPII,
+  FinishReason.RECITATION,
+]);
 
-// Models that accept server-side refusal fallbacks ("default" routing).
-const FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"]);
-
-export const WEB_SEARCH_TOOL: Tool = {
+export const WEB_SEARCH_TOOL: FunctionDeclaration = {
   name: "web_search",
   description:
     "Search the web. Returns numbered sources with the passages that best match each query; cite them as [n]. " +
     "Send several focused queries in one call (they run in parallel) instead of one broad query. " +
     "Use `since` (YYYY-MM-DD) to keep only pages published on or after a date, e.g. for news since a past conversation; " +
     "leave it out for pricing or docs pages, which are rarely dated. Use `domain` to search one site, e.g. an official pricing page.",
-  input_schema: {
+  parametersJsonSchema: {
     type: "object",
     properties: {
       queries: {
@@ -55,7 +63,6 @@ export const WEB_SEARCH_TOOL: Tool = {
     },
     required: ["queries"],
   },
-  eager_input_streaming: true,
 };
 
 const SearchInput = z.object({
@@ -93,100 +100,99 @@ export async function runSearches(
 }
 
 export async function* streamAnswer(options: {
-  history: MessageParam[];
-  turn: ContentBlockParam[];
+  history: Content[];
+  turn: Part[];
   evidence: Evidence;
   effort: "low" | "medium";
   retrievedAt: string;
   signal: AbortSignal;
 }): AsyncGenerator<AnswerEvent> {
-  const model = config.answerModel;
-  const messages: MessageParam[] = [...options.history, { role: "user", content: options.turn }];
-  const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const contents: Content[] = [...options.history, { role: "user", parts: options.turn }];
+  const usage: Usage = { inputTokens: 0, outputTokens: 0, thinkingTokens: 0, cachedTokens: 0 };
+  // After the first round, stay on the model that started the turn: its
+  // thought signatures are only valid for that model.
+  let models = config.answerModels;
   let text = "";
   let searchRounds = 0;
 
   while (true) {
     const mustAnswer = searchRounds >= MAX_SEARCH_ROUNDS;
-    const stream = anthropic().beta.messages.stream(
-      {
-        model,
-        max_tokens: 32000,
-        system: [{ type: "text", text: ANSWER_SYSTEM, cache_control: { type: "ephemeral" } }],
-        tools: [WEB_SEARCH_TOOL],
-        tool_choice: mustAnswer ? { type: "none" } : { type: "auto" },
-        output_config: { effort: options.effort },
-        cache_control: { type: "ephemeral" },
-        messages,
-        ...(FALLBACK_MODELS.has(model)
-          ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
-          : {}),
+    const { model, result: stream } = await generateStream(models, {
+      contents,
+      config: {
+        systemInstruction: ANSWER_SYSTEM,
+        tools: [{ functionDeclarations: [WEB_SEARCH_TOOL] }],
+        toolConfig: {
+          functionCallingConfig: { mode: mustAnswer ? FunctionCallingConfigMode.NONE : FunctionCallingConfigMode.AUTO },
+        },
+        thinkingConfig: { thinkingLevel: options.effort === "medium" ? ThinkingLevel.MEDIUM : ThinkingLevel.LOW },
+        maxOutputTokens: 16000,
+        abortSignal: options.signal,
       },
-      { signal: options.signal },
-    );
+    });
+    models = [model];
 
-    for await (const event of stream) {
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        text += event.delta.text;
-        yield { type: "delta", text: event.delta.text };
+    const parts: Part[] = [];
+    let roundText = "";
+    let finishReason: string | null = null;
+    let roundUsage: GenerateContentResponseUsageMetadata | undefined;
+    for await (const chunk of stream) {
+      const candidate = chunk.candidates?.[0];
+      for (const part of candidate?.content?.parts ?? []) {
+        parts.push(part);
+        if (part.text && !part.thought) {
+          roundText += part.text;
+          yield { type: "delta", text: part.text };
+        }
       }
+      if (candidate?.finishReason) finishReason = candidate.finishReason;
+      roundUsage = chunk.usageMetadata ?? roundUsage;
     }
+    usage.inputTokens += roundUsage?.promptTokenCount ?? 0;
+    usage.outputTokens += roundUsage?.candidatesTokenCount ?? 0;
+    usage.thinkingTokens += roundUsage?.thoughtsTokenCount ?? 0;
+    usage.cachedTokens += roundUsage?.cachedContentTokenCount ?? 0;
 
-    const message = await stream.finalMessage();
-    usage.inputTokens += message.usage.input_tokens;
-    usage.outputTokens += message.usage.output_tokens;
-    usage.cacheReadTokens += message.usage.cache_read_input_tokens ?? 0;
-    usage.cacheWriteTokens += message.usage.cache_creation_input_tokens ?? 0;
-
-    const toolUses = message.content.filter(
-      (block): block is Anthropic.Beta.Messages.BetaToolUseBlock => block.type === "tool_use",
-    );
-    if (message.stop_reason !== "tool_use" || toolUses.length === 0 || mustAnswer) {
-      if (message.stop_reason === "refusal" && !text.trim()) {
-        const refusal = "I can't help with that one.";
-        text = refusal;
-        yield { type: "delta", text: refusal };
+    const calls = parts.filter((p) => p.functionCall);
+    if (calls.length === 0 || mustAnswer) {
+      text += roundText;
+      if (!text.trim() && finishReason && BLOCKED.has(finishReason)) {
+        text = "I can't help with that one.";
+        yield { type: "delta", text };
       }
-      yield { type: "final", text, stopReason: message.stop_reason, usage, searchRounds };
+      yield { type: "final", text, finishReason, usage, searchRounds, model };
       return;
     }
 
-    messages.push({ role: "assistant", content: message.content });
+    // Any text written before a search call is a preamble ("let me check"),
+    // not part of the answer, so the UI is told to drop it.
+    if (roundText) yield { type: "reset" };
+    contents.push({ role: "model", parts });
     searchRounds += 1;
 
-    const results: ToolResult[] = [];
-    for (const toolUse of toolUses) {
-      const parsed = SearchInput.safeParse(toolUse.input);
-      if (toolUse.name !== "web_search" || !parsed.success) {
-        results.push({
-          type: "tool_result",
-          tool_use_id: toolUse.id,
-          is_error: true,
-          content: "Invalid input. Call web_search with {queries: [{query, since?, domain?}]}.",
-        });
-        continue;
+    const responses: Part[] = [];
+    for (const { functionCall } of calls) {
+      const call = functionCall!;
+      const parsed = SearchInput.safeParse(call.args);
+      let output: Record<string, unknown>;
+      if (call.name !== "web_search" || !parsed.success) {
+        output = { error: "Invalid input. Call web_search with {queries: [{query, since?, domain?}]}." };
+      } else {
+        const queries = parsed.data.queries.slice(0, 4);
+        yield { type: "searching", queries: queries.map((q) => q.query) };
+        const before = options.evidence.sources.length;
+        const { numbers, failures } = await runSearches(queries, options.evidence, options.retrievedAt, options.signal);
+        const fresh = numbers.filter((n) => n > before);
+        if (fresh.length > 0) yield { type: "sources", numbers: fresh };
+        const repeated = numbers.filter((n) => n <= before);
+        output = {
+          results: fresh.length > 0 ? options.evidence.render(fresh) : "No new sources found.",
+          ...(repeated.length > 0 ? { alsoMatched: repeated.map((n) => `[${n}]`).join(" ") } : {}),
+          ...(failures.length > 0 ? { failedSearches: failures } : {}),
+        };
       }
-      const queries = parsed.data.queries.slice(0, 4);
-      yield { type: "searching", queries: queries.map((q) => q.query) };
-      const before = options.evidence.sources.length;
-      const { numbers, failures } = await runSearches(queries, options.evidence, options.retrievedAt, options.signal);
-      const fresh = numbers.filter((n) => n > before);
-      if (fresh.length > 0) yield { type: "sources", numbers: fresh };
-      const repeated = numbers.filter((n) => n <= before);
-      const body = [
-        fresh.length > 0 ? options.evidence.render(fresh) : "No new sources found.",
-        repeated.length > 0 ? `Also matched sources you already have: ${repeated.map((n) => `[${n}]`).join(" ")}` : "",
-        failures.length > 0 ? `Some searches failed: ${failures.join("; ")}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-      results.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: body,
-        is_error: numbers.length === 0 && failures.length > 0,
-      });
+      responses.push({ functionResponse: { id: call.id, name: call.name ?? "web_search", response: output } });
     }
-    messages.push({ role: "user", content: results });
+    contents.push({ role: "user", parts: responses });
   }
 }

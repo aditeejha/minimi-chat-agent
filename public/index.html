@@ -4,13 +4,23 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Chat agent</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f5bd3'/%3E%3Ccircle cx='14' cy='14' r='6' fill='none' stroke='white' stroke-width='3'/%3E%3Cpath d='M18.5 18.5 24 24' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0a0a'/%3E%3Ccircle cx='14' cy='14' r='6' fill='none' stroke='white' stroke-width='3'/%3E%3Cpath d='M18.5 18.5 24 24' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="app">
       <aside class="sidebar" id="sidebar">
-        <button class="new-chat" id="new-chat" type="button">New chat</button>
+        <div class="brand">
+          <span class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 5 5" /></svg></span>
+          Chat agent
+        </div>
+        <button class="new-chat" id="new-chat" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          New chat
+        </button>
         <nav class="threads" id="threads" aria-label="Conversations"></nav>
         <details class="clock" id="clock">
           <summary>Simulated time <span id="clock-badge" class="badge" hidden>on</span></summary>
@@ -19,6 +29,7 @@
           <button type="button" id="clock-clear">Use real time</button>
         </details>
       </aside>
+      <div class="scrim" id="scrim"></div>
 
       <main class="main">
         <header class="topbar">
@@ -32,7 +43,7 @@
         <section class="messages" id="messages" aria-live="polite">
           <div class="empty" id="empty">
             <h2>Ask anything.</h2>
-            <p>I search the web, cite what I find, and remember our conversations by date, so you can ask later whether an answer still holds.</p>
+            <p>I search the web, cite what I find, and remember our conversations by date, so you can come back later and ask whether an answer still holds.</p>
             <div class="suggestions">
               <button type="button">Shortlist 5 CRM tools for a 20-person sales team, with current pricing</button>
               <button type="button">Compare managed Postgres hosting prices for a small startup</button>
@@ -42,9 +53,13 @@
         </section>
 
         <form class="composer" id="composer">
-          <textarea id="input" rows="1" placeholder="Message" autocomplete="off"></textarea>
-          <button type="submit" id="send">Send</button>
-          <button type="button" id="stop" hidden>Stop</button>
+          <textarea id="input" rows="1" placeholder="Ask anything" autocomplete="off"></textarea>
+          <button type="submit" id="send" aria-label="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+          </button>
+          <button type="button" id="stop" aria-label="Stop" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" /></svg>
+          </button>
         </form>
       </main>
     </div>

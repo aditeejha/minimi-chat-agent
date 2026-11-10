@@ -4,6 +4,7 @@ import DOMPurify from "/vendor/purify.js";
 const $ = (id) => document.getElementById(id);
 const els = {
   sidebar: $("sidebar"),
+  scrim: $("scrim"),
   threads: $("threads"),
   newChat: $("new-chat"),
   menu: $("menu"),
@@ -135,7 +136,8 @@ function renderMarkdown(target, text, sources) {
 function scrollToEnd(force = false) {
   const box = els.messages;
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
-  if (force || nearBottom) box.scrollTop = box.scrollHeight;
+  if (force) box.scrollTo({ top: box.scrollHeight, behavior: "smooth" });
+  else if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 
 function addUserMessage(content, createdAt) {
@@ -250,12 +252,22 @@ function createAssistantView() {
       if (!text) {
         status.hidden = true;
         detail.replaceChildren();
+        wrap.classList.add("streaming");
       }
       text += chunk;
       if (!frame) frame = requestAnimationFrame(paint);
     },
+    reset() {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      text = "";
+      body.replaceChildren();
+      wrap.classList.remove("streaming");
+      status.hidden = false;
+    },
     finish(message) {
       if (frame) cancelAnimationFrame(frame);
+      wrap.classList.remove("streaming");
       status.hidden = true;
       detail.replaceChildren();
       text = message.content;
@@ -267,6 +279,7 @@ function createAssistantView() {
     },
     fail(errorText) {
       if (frame) cancelAnimationFrame(frame);
+      wrap.classList.remove("streaming");
       status.hidden = true;
       detail.replaceChildren();
       if (text) renderMarkdown(body, text, sourceList);
@@ -372,6 +385,11 @@ function setBusy(busy) {
   els.stop.hidden = !busy;
   els.input.disabled = busy;
   els.newChat.disabled = busy;
+  syncSend();
+}
+
+function syncSend() {
+  els.send.disabled = !els.input.value.trim();
 }
 
 async function send(text) {
@@ -408,6 +426,8 @@ async function send(text) {
         view.sources(event.sources);
       } else if (event.type === "delta") {
         view.delta(event.text);
+      } else if (event.type === "reset") {
+        view.reset();
       } else if (event.type === "done") {
         view.finish(event.message);
       } else if (event.type === "error") {
@@ -445,10 +465,17 @@ els.input.addEventListener("keydown", (event) => {
   }
 });
 
-els.input.addEventListener("input", autosize);
+els.input.addEventListener("input", () => {
+  autosize();
+  syncSend();
+});
 els.stop.addEventListener("click", () => state.controller?.abort());
-els.newChat.addEventListener("click", newChat);
+els.newChat.addEventListener("click", () => {
+  newChat();
+  els.sidebar.classList.remove("open");
+});
 els.menu.addEventListener("click", () => els.sidebar.classList.toggle("open"));
+els.scrim.addEventListener("click", () => els.sidebar.classList.remove("open"));
 
 els.remove.addEventListener("click", async () => {
   if (!state.threadId || state.controller) return;
@@ -477,6 +504,7 @@ els.clockClear.addEventListener("click", () => {
 async function boot() {
   els.clockInput.value = storageGet("simulated-time") ?? "";
   syncClock();
+  syncSend();
   const health = await fetch("/api/health")
     .then((r) => r.json())
     .catch(() => null);

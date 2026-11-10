@@ -1,0 +1,33 @@
+{
+  "name": "minimi-chat-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A chat agent with one tool, web search, that remembers what it told you and when, and can check whether it is still true.",
+  "author": "Aditee Jha",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "predev": "node scripts/check-env.mjs",
+    "dev": "node --watch --env-file-if-exists=.env --disable-warning=ExperimentalWarning src/server.ts",
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning src/server.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "eval": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning eval/run.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.7.0",
+    "@hono/node-server": "^2.1.6",
+    "chrono-node": "^2.10.3",
+    "dompurify": "^3.4.17",
+    "hono": "^4.13.17",
+    "marked": "^18.2.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  }
+}

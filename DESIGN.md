@@ -42,4 +42,4 @@ message ─► recall ─► plan ─► search + re-read ─► answer (streame
 - **Change watching:** re-check cited pages in the background and tell the user, unprompted, when something they asked about changed.
 - **Structural diffs** of stored page snapshots, so pricing tables compare cell by cell.
 - **Faster first words:** start searching on the raw message while the planner runs.
-- **Accounts:** per-user memory, export, and "forget this" that also deletes stored evidence.
+- **Accounts:** memory is already scoped per browser by a cookie; next come real sign-in, export, and "forget this" that also deletes stored evidence.

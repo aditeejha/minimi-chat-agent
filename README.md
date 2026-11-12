@@ -32,6 +32,14 @@ Conversations are stored in `data/agent.db` and searched by date, so the agent's
 
 Messages sent while simulated time is on are stamped with that time. The web results are still today's.
 
+Each browser gets its own memory through a cookie, so on a shared deployment visitors never see each other's conversations.
+
+## Deploy
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/aditeejha/minimi-chat-agent)
+
+`render.yaml` describes a free Render web service. The button asks for `GEMINI_API_KEY` and `TAVILY_API_KEY`, then builds with `npm ci` and starts with `npm start`. On the free plan the service sleeps after 15 minutes without traffic (the next request takes about a minute), and its disk is temporary, so memory starts empty again after a restart. Every visitor also shares the Gemini key's daily quota.
+
 ## Scripts
 
 | Command | What it does |

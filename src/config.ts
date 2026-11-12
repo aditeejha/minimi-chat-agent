@@ -8,7 +8,7 @@ function list(value: string | undefined, fallback: string): string[] {
 export const config = {
   port: Number(process.env.PORT) || 3000,
   geminiApiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
-  answerModels: list(process.env.ANSWER_MODELS, "gemini-3.5-flash,gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite"),
+  answerModels: list(process.env.ANSWER_MODELS, "gemini-3.5-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite"),
   plannerModels: list(process.env.PLANNER_MODELS, "gemini-3.5-flash-lite,gemini-3.1-flash-lite"),
   tavilyApiKey: process.env.TAVILY_API_KEY || "",
   dbPath: process.env.DB_PATH || "data/agent.db",

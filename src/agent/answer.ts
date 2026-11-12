@@ -10,7 +10,7 @@ import {
 } from "@google/genai";
 import { z } from "zod";
 import { config } from "../config.ts";
-import { availableModels, coolDown, generateStream } from "../llm.ts";
+import { availableModels, coolDown, generateStream, ModelsUnavailable } from "../llm.ts";
 import { Evidence } from "../search/evidence.ts";
 import { search, type SearchQuery } from "../search/tavily.ts";
 import { ANSWER_SYSTEM } from "./prompts.ts";
@@ -168,7 +168,7 @@ async function* streamRound(
       const culprit = round.model || availableModels(remaining)[0] || "";
       coolDown(culprit);
       remaining = remaining.filter((m) => m !== culprit);
-      if (remaining.length === 0) throw new Error("The Gemini models are too slow to respond right now. Try again in a minute.");
+      if (remaining.length === 0) throw new ModelsUnavailable("The Gemini models are too slow to respond right now. Try again in a minute.");
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", cancel);
@@ -193,22 +193,39 @@ export async function* streamAnswer(options: {
   let searchRounds = 0;
   let retries = 0;
 
+  const planned = options.evidence.sources.length;
+  let handedOver = false;
+
   while (true) {
     const mustAnswer = searchRounds >= MAX_SEARCH_ROUNDS;
-    const round = yield* streamRound(
-      models,
-      contents,
-      {
-        systemInstruction: ANSWER_SYSTEM,
-        tools: [{ functionDeclarations: [WEB_SEARCH_TOOL] }],
-        toolConfig: {
-          functionCallingConfig: { mode: mustAnswer ? FunctionCallingConfigMode.NONE : FunctionCallingConfigMode.AUTO },
+    let round: Round;
+    try {
+      round = yield* streamRound(
+        models,
+        contents,
+        {
+          systemInstruction: ANSWER_SYSTEM,
+          tools: [{ functionDeclarations: [WEB_SEARCH_TOOL] }],
+          toolConfig: {
+            functionCallingConfig: { mode: mustAnswer ? FunctionCallingConfigMode.NONE : FunctionCallingConfigMode.AUTO },
+          },
+          thinkingConfig: { thinkingLevel: options.effort === "medium" ? ThinkingLevel.LOW : ThinkingLevel.MINIMAL },
+          maxOutputTokens: 16000,
         },
-        thinkingConfig: { thinkingLevel: options.effort === "medium" ? ThinkingLevel.LOW : ThinkingLevel.MINIMAL },
-        maxOutputTokens: 16000,
-      },
-      options.signal,
-    );
+        options.signal,
+      );
+    } catch (error) {
+      const midTurn = contents.length > options.history.length + 1;
+      if (options.signal.aborted || !(error instanceof ModelsUnavailable) || !midTurn || handedOver) throw error;
+      // The model that started the turn ran out mid-turn. Its tool calls only
+      // replay on that model, so another model gets the follow-up results as text.
+      handedOver = true;
+      const extra = Array.from({ length: options.evidence.sources.length - planned }, (_, i) => planned + i + 1);
+      const followUp = extra.length > 0 ? [{ text: `Sources from a follow-up search:\n${options.evidence.render(extra)}` }] : [];
+      contents.splice(0, contents.length, ...options.history, { role: "user", parts: [...options.turn, ...followUp] });
+      models = config.answerModels.filter((m) => !models.includes(m));
+      continue;
+    }
     const { model, parts, finishReason } = round;
     const roundText = round.text;
     models = [model];

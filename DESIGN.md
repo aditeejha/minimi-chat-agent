@@ -24,7 +24,7 @@ message ─► recall ─► plan ─► search + re-read ─► answer (streame
 - **Time is data.** The clock is passed into each turn, not read with `new Date()`. "Monday" is the user's Monday, tests pin the date, and the UI's simulated time tests a week of memory in minutes.
 - **One tool.** The model can call only `web_search`. Memory is fetched by the harness, so date maths is code, not model output.
 - **Small, honest context.** Earlier turns are replayed as text with citations rewritten as domains. Old search results are not replayed, so stale evidence never looks fresh.
-- **Degrades instead of failing.** Free Gemini keys allow about 20 requests per model per day and often return "503 high demand". Each role has a list of models; a failing one sits out (until Google's reset time for a spent quota) and the next takes over, ending with Flash-Lite. A watchdog aborts a silent stream (one hung for five minutes in testing) and retries elsewhere if nothing has reached the user.
+- **Degrades instead of failing.** Free Gemini keys allow about 20 requests per model per day and often return "503 high demand". Each role has a list of models; a failing one sits out (until Google's reset time for a spent quota) and the next takes over, ending with Flash-Lite. A watchdog aborts a silent stream (one hung for five minutes in testing) and retries elsewhere if nothing has reached the user. Flash sometimes calls the tool even when tool calling is switched off; that call is answered with "search limit reached, answer from your sources", so a turn never ends empty.
 
 ## Considered and rejected
 

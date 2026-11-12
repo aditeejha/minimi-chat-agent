@@ -87,9 +87,24 @@ export function looksRelevant(query: string, hit: SearchHit): boolean {
   return found >= Math.ceil(terms.length / 2);
 }
 
+// Models write Google's "site:" operator, which Tavily reads as plain words.
+export function withoutSiteOperator(q: SearchQuery): SearchQuery {
+  const match = q.query.match(/(?:^|\s)site:(\S+)/i);
+  if (!match) return q;
+  const [host = "", ...path] = match[1]!.replace(/^https?:\/\//i, "").split("/");
+  const rest = q.query.replace(match[0], " ").replace(/\s+/g, " ").trim();
+  const fromPath = path
+    .filter((segment) => segment && !/^[a-z]{2}(-[a-z]{2})?$/i.test(segment))
+    .join(" ")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  return { ...q, query: rest || fromPath || host, domain: q.domain || host };
+}
+
 // "fast" depth returns the chunks of each page that best match the query, so
 // a pricing page arrives as its price table rather than its hero banner.
-export async function search(q: SearchQuery, signal?: AbortSignal): Promise<SearchHit[]> {
+export async function search(input: SearchQuery, signal?: AbortSignal): Promise<SearchHit[]> {
+  const q = withoutSiteOperator(input);
   const body: Record<string, unknown> = {
     query: q.query,
     search_depth: "fast",

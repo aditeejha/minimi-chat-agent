@@ -30,6 +30,12 @@ export interface Usage {
 }
 
 const MAX_SEARCH_ROUNDS = 1;
+const MAX_RETRIES = 2;
+const SEARCH_LIMIT = {
+  error:
+    "Search limit reached for this turn. Do not search again. Write the answer now from the sources above, " +
+    "citing them as [n], and say plainly what they do not cover.",
+};
 const BLOCKED = new Set<string>([
   FinishReason.SAFETY,
   FinishReason.PROHIBITED_CONTENT,
@@ -185,6 +191,7 @@ export async function* streamAnswer(options: {
   let models = config.answerModels;
   let text = "";
   let searchRounds = 0;
+  let retries = 0;
 
   while (true) {
     const mustAnswer = searchRounds >= MAX_SEARCH_ROUNDS;
@@ -211,11 +218,17 @@ export async function* streamAnswer(options: {
     usage.cachedTokens += round.usage?.cachedContentTokenCount ?? 0;
 
     const calls = parts.filter((p) => p.functionCall);
-    if (calls.length === 0 || mustAnswer) {
+    if (calls.length === 0 || (mustAnswer && roundText.trim())) {
       text += roundText;
       if (!text.trim() && finishReason && BLOCKED.has(finishReason)) {
         text = "I can't help with that one.";
         yield { type: "delta", text };
+      }
+      // A malformed tool call ends a round with no text; a second try usually works.
+      if (!text.trim()) {
+        if (retries >= MAX_RETRIES) throw new Error(`${model} returned no answer (${finishReason ?? "empty"}). Try asking again.`);
+        retries += 1;
+        continue;
       }
       yield { type: "final", text, finishReason, usage, searchRounds, model };
       return;
@@ -225,6 +238,20 @@ export async function* streamAnswer(options: {
     // not part of the answer, so the UI is told to drop it.
     if (roundText) yield { type: "reset" };
     contents.push({ role: "model", parts });
+
+    // Gemini can call the tool even with tool calling off, so the extra call
+    // is answered with an instruction to write the answer instead.
+    if (mustAnswer) {
+      if (retries >= MAX_RETRIES) throw new Error(`${model} kept searching instead of answering. Try asking again.`);
+      retries += 1;
+      contents.push({
+        role: "user",
+        parts: calls.map(({ functionCall }) => ({
+          functionResponse: { id: functionCall!.id, name: functionCall!.name ?? "web_search", response: SEARCH_LIMIT },
+        })),
+      });
+      continue;
+    }
     searchRounds += 1;
 
     const responses: Part[] = [];

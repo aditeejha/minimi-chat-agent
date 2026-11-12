@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Evidence, citationsToDomains, citedNumbers, normalizeUrl } from "../src/search/evidence.ts";
+import { withoutSiteOperator } from "../src/search/tavily.ts";
 
 const at = "2026-11-10T08:30:00.000Z";
 
@@ -39,4 +40,10 @@ test("old answers are replayed with domains instead of numbers", () => {
     { n: 2, url: "https://neon.com/pricing", title: "Neon", published: null, retrievedAt: at, passages: "" },
   ];
   assert.equal(citationsToDomains("HubSpot $20 [1]; Neon free tier [1, 2]; ghost [7].", sources), "HubSpot $20 (hubspot.com); Neon free tier (hubspot.com, neon.com); ghost [7].");
+});
+
+test("a site: operator in a query becomes a domain filter", () => {
+  assert.deepEqual(withoutSiteOperator({ query: "site:pipedrive.com pricing per seat" }), { query: "pricing per seat", domain: "pipedrive.com" });
+  assert.deepEqual(withoutSiteOperator({ query: "site:nodejs.org/en/about/previous-releases" }), { query: "about previous releases", domain: "nodejs.org" });
+  assert.deepEqual(withoutSiteOperator({ query: "Node.js LTS" }), { query: "Node.js LTS" });
 });

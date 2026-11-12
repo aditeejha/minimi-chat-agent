@@ -180,7 +180,7 @@ function renderSources(container, sources, cited) {
   details.className = "sources";
   const summary = document.createElement("summary");
   const usedCount = sources.filter((s) => citedSet.has(s.n)).length;
-  summary.textContent = cited ? `Sources: ${usedCount} cited, ${sources.length} read` : `${sources.length} sources`;
+  summary.textContent = cited ? `Sources: ${usedCount} cited, ${sources.length} read` : `${sources.length} source${sources.length === 1 ? "" : "s"}`;
   const list = document.createElement("ol");
   for (const s of ordered) {
     const li = document.createElement("li");

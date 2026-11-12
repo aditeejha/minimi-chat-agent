@@ -223,7 +223,7 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
 
   yield {
     type: "status",
-    text: evidence.sources.length > 0 ? `Reading ${evidence.sources.length} sources` : "Writing",
+    text: evidence.sources.length > 0 ? `Reading ${evidence.sources.length} source${evidence.sources.length === 1 ? "" : "s"}` : "Writing",
   };
 
   let text = "";

@@ -40,6 +40,7 @@ export interface TurnInput {
   message: string;
   now: Date;
   timeZone: string;
+  owner: string;
   signal: AbortSignal;
 }
 
@@ -133,7 +134,8 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
   const nowIso = input.now.toISOString();
   const local = toLocal(input.now, timeZone);
 
-  const thread = (input.threadId && store.getThread(input.threadId)) || store.createThread(titleFrom(message), nowIso);
+  const thread =
+    (input.threadId && store.getThread(input.threadId, input.owner)) || store.createThread(titleFrom(message), nowIso, input.owner);
   yield { type: "thread", thread };
 
   const window = store.threadMessages(thread.id).slice(-HISTORY_MESSAGES);
@@ -151,7 +153,7 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
 
   const excluded = new Set(window.filter((m) => m.role === "user").map((m) => m.id));
   excluded.add(userMessage.id);
-  const memory = recall(store, message, local, excluded);
+  const memory = recall(store, message, local, excluded, input.owner);
 
   const now = describeNow(input.now, timeZone);
   const smallTalk = isSmallTalk(message);

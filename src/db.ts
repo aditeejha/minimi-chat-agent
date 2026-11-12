@@ -45,12 +45,16 @@ export interface Exchange {
   cited: number[];
 }
 
+// Every thread belongs to an owner (one per browser on a shared deployment),
+// and every read below is scoped to it, so visitors never see each other's
+// conversations or recall each other's answers.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  owner TEXT NOT NULL DEFAULT 'local'
 );
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -82,8 +86,9 @@ const EXCHANGE_SELECT = `
 SELECT u.id, u.thread_id, u.created_at, u.local_date, u.time_zone, u.content AS question,
        a.content AS answer, a.sources, a.meta
 FROM messages u
+JOIN threads t ON t.id = u.thread_id
 LEFT JOIN messages a ON a.reply_to = u.id AND a.role = 'assistant'
-WHERE u.role = 'user'`;
+WHERE u.role = 'user' AND t.owner = ?`;
 
 type Row = Record<string, unknown>;
 
@@ -134,26 +139,34 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    const columns = this.db.prepare("PRAGMA table_info(threads)").all() as Row[];
+    if (!columns.some((c) => c.name === "owner")) {
+      this.db.exec("ALTER TABLE threads ADD COLUMN owner TEXT NOT NULL DEFAULT 'local'");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS threads_by_owner ON threads(owner, updated_at)");
   }
 
-  createThread(title: string, at: string): Thread {
+  createThread(title: string, at: string, owner: string): Thread {
     const thread = { id: randomUUID(), title, createdAt: at, updatedAt: at };
     this.db
-      .prepare("INSERT INTO threads (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
-      .run(thread.id, thread.title, thread.createdAt, thread.updatedAt);
+      .prepare("INSERT INTO threads (id, title, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?)")
+      .run(thread.id, thread.title, thread.createdAt, thread.updatedAt, owner);
     return thread;
   }
 
-  getThread(id: string): Thread | null {
-    const row = this.db.prepare("SELECT * FROM threads WHERE id = ?").get(id) as Row | undefined;
+  getThread(id: string, owner: string): Thread | null {
+    const row = this.db.prepare("SELECT * FROM threads WHERE id = ? AND owner = ?").get(id, owner) as Row | undefined;
     return row ? toThread(row) : null;
   }
 
-  listThreads(): Thread[] {
-    return (this.db.prepare("SELECT * FROM threads ORDER BY updated_at DESC").all() as Row[]).map(toThread);
+  listThreads(owner: string): Thread[] {
+    return (this.db.prepare("SELECT * FROM threads WHERE owner = ? ORDER BY updated_at DESC").all(owner) as Row[]).map(
+      toThread,
+    );
   }
 
-  deleteThread(id: string): void {
+  deleteThread(id: string, owner: string): void {
+    if (!this.getThread(id, owner)) return;
     this.db.prepare("DELETE FROM messages WHERE thread_id = ?").run(id);
     this.db.prepare("DELETE FROM threads WHERE id = ?").run(id);
   }
@@ -189,21 +202,23 @@ export class Store {
     ).map(toMessage);
   }
 
-  exchangesBetween(from: string, to: string, limit: number): Exchange[] {
+  exchangesBetween(owner: string, from: string, to: string, limit: number): Exchange[] {
     return (
       this.db
         .prepare(`${EXCHANGE_SELECT} AND u.local_date BETWEEN ? AND ? ORDER BY u.created_at DESC LIMIT ?`)
-        .all(from, to, limit) as Row[]
+        .all(owner, from, to, limit) as Row[]
     ).map(toExchange);
   }
 
-  exchangesMatching(ftsQuery: string, limit: number): Exchange[] {
+  exchangesMatching(owner: string, ftsQuery: string, limit: number): Exchange[] {
     const rows = this.db
       .prepare(
-        `SELECT m.id, m.role, m.reply_to FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
-         WHERE messages_fts MATCH ? ORDER BY bm25(messages_fts) LIMIT ?`,
+        `SELECT m.id, m.role, m.reply_to FROM messages_fts f
+         JOIN messages m ON m.rowid = f.rowid
+         JOIN threads t ON t.id = m.thread_id
+         WHERE messages_fts MATCH ? AND t.owner = ? ORDER BY bm25(messages_fts) LIMIT ?`,
       )
-      .all(ftsQuery, limit * 3) as Row[];
+      .all(ftsQuery, owner, limit * 3) as Row[];
     const ids: string[] = [];
     for (const row of rows) {
       const id = row.role === "user" ? String(row.id) : row.reply_to == null ? null : String(row.reply_to);
@@ -212,24 +227,30 @@ export class Store {
     }
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(", ");
-    const found = (this.db.prepare(`${EXCHANGE_SELECT} AND u.id IN (${placeholders})`).all(...ids) as Row[]).map(
-      toExchange,
-    );
+    const found = (
+      this.db.prepare(`${EXCHANGE_SELECT} AND u.id IN (${placeholders})`).all(owner, ...ids) as Row[]
+    ).map(toExchange);
     return ids.map((id) => found.find((e) => e.id === id)).filter((e): e is Exchange => e !== undefined);
   }
 
-  historyBounds(): { first: string | null; count: number } {
+  historyBounds(owner: string): { first: string | null; count: number } {
     const row = this.db
-      .prepare("SELECT MIN(local_date) AS first, COUNT(*) AS count FROM messages WHERE role = 'user'")
-      .get() as Row;
+      .prepare(
+        `SELECT MIN(m.local_date) AS first, COUNT(*) AS count FROM messages m
+         JOIN threads t ON t.id = m.thread_id WHERE m.role = 'user' AND t.owner = ?`,
+      )
+      .get(owner) as Row;
     return { first: row.first == null ? null : String(row.first), count: Number(row.count) };
   }
 
-  activeDates(limit: number): string[] {
+  activeDates(owner: string, limit: number): string[] {
     return (
       this.db
-        .prepare("SELECT DISTINCT local_date FROM messages ORDER BY local_date DESC LIMIT ?")
-        .all(limit) as Row[]
+        .prepare(
+          `SELECT DISTINCT m.local_date FROM messages m JOIN threads t ON t.id = m.thread_id
+           WHERE t.owner = ? ORDER BY m.local_date DESC LIMIT ?`,
+        )
+        .all(owner, limit) as Row[]
     ).map((row) => String(row.local_date));
   }
 }

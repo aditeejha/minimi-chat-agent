@@ -1,6 +1,8 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { Hono } from "hono";
+import { randomUUID } from "node:crypto";
+import { Hono, type Context } from "hono";
+import { getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { config, missingKeys } from "./config.ts";
@@ -9,7 +11,30 @@ import { runTurn, toClient } from "./agent/turn.ts";
 import { safeTimeZone } from "./time.ts";
 
 const store = new Store(config.dbPath);
-const app = new Hono();
+const app = new Hono<{ Variables: { owner: string } }>();
+
+// Each browser gets its own memory: a random id in an httpOnly cookie scopes
+// every thread, recall and delete, so a shared deployment keeps visitors apart.
+const VISITOR = /^[0-9a-f-]{36}$/;
+
+function visitor(c: Context): string {
+  const existing = getCookie(c, "visitor");
+  if (existing && VISITOR.test(existing)) return existing;
+  const id = randomUUID();
+  setCookie(c, "visitor", id, {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: new URL(c.req.url).protocol === "https:" || c.req.header("x-forwarded-proto") === "https",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+  });
+  return id;
+}
+
+app.use("/api/*", async (c, next) => {
+  c.set("owner", visitor(c));
+  await next();
+});
 
 const ChatRequest = z.object({
   threadId: z.string().nullish(),
@@ -22,16 +47,16 @@ app.get("/api/health", (c) =>
   c.json({ missing: missingKeys(), answerModels: config.answerModels, plannerModels: config.plannerModels }),
 );
 
-app.get("/api/threads", (c) => c.json(store.listThreads()));
+app.get("/api/threads", (c) => c.json(store.listThreads(c.get("owner"))));
 
 app.get("/api/threads/:id/messages", (c) => {
-  const thread = store.getThread(c.req.param("id"));
+  const thread = store.getThread(c.req.param("id"), c.get("owner"));
   if (!thread) return c.json({ error: "Thread not found" }, 404);
   return c.json({ thread, messages: store.threadMessages(thread.id).map(toClient) });
 });
 
 app.delete("/api/threads/:id", (c) => {
-  store.deleteThread(c.req.param("id"));
+  store.deleteThread(c.req.param("id"), c.get("owner"));
   return c.body(null, 204);
 });
 
@@ -54,6 +79,7 @@ app.post("/api/chat", async (c) => {
         message,
         now: asOf ? new Date(asOf) : new Date(),
         timeZone: safeTimeZone(timeZone),
+        owner: c.get("owner"),
         signal: controller.signal,
       })) {
         await stream.writeSSE({ data: JSON.stringify(event) });

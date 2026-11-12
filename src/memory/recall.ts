@@ -50,11 +50,12 @@ export function recall(
   text: string,
   today: LocalTime,
   excludeIds: Set<string>,
+  owner: string,
 ): RecallResult {
   const windows = resolvePastDates(text, today);
   const byDate: Exchange[] = [];
   for (const window of windows) {
-    for (const exchange of store.exchangesBetween(window.from, window.to, 12)) {
+    for (const exchange of store.exchangesBetween(owner, window.from, window.to, 12)) {
       if (!excludeIds.has(exchange.id) && !byDate.some((e) => e.id === exchange.id)) byDate.push(exchange);
     }
   }
@@ -62,7 +63,7 @@ export function recall(
   const query = ftsQuery(keywords(text));
   const byTopic = query
     ? store
-        .exchangesMatching(query, 8)
+        .exchangesMatching(owner, query, 8)
         .filter((e) => !excludeIds.has(e.id) && !byDate.some((d) => d.id === e.id))
         .slice(0, 5)
     : [];
@@ -71,7 +72,7 @@ export function recall(
     windows,
     byDate,
     byTopic,
-    firstDate: store.historyBounds().first,
-    activeDates: store.activeDates(10),
+    firstDate: store.historyBounds(owner).first,
+    activeDates: store.activeDates(owner, 10),
   };
 }

@@ -135,6 +135,7 @@ async function run() {
         message: step.message,
         now: step.at,
         timeZone,
+        owner: "eval",
         signal: new AbortController().signal,
       })) {
         if (event.type === "thread") threadId = event.thread.id;
